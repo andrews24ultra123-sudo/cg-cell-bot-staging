@@ -1,6 +1,6 @@
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta, time, timezone
 from typing import Optional, Dict
 
 # ---- Telegram imports (and version log) ----
@@ -24,7 +24,7 @@ except Exception:
         import pytz  # type: ignore
         SGT = pytz.timezone("Asia/Singapore")
     except Exception:
-        SGT = None  # last-resort; scheduler will use naive times
+        SGT = timezone.utc  # last-resort; use UTC
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logging.info(f"python-telegram-bot version: {getattr(telegram, '__version__', 'unknown')}")
@@ -116,9 +116,7 @@ async def _remind_with_reply_fallback(
 # ---------- Poll senders ----------
 async def send_sunday_service_poll(ctx: ContextTypes.DEFAULT_TYPE, update: Optional[Update] = None):
     target_chat = _effective_target_chat(update)
-    now = datetime.now()
-    if SGT:
-        now = now.astimezone(SGT)
+    now = datetime.now(SGT)
     target = upcoming_sunday_for_poll(now)
     msg = await ctx.bot.send_poll(
         chat_id=target_chat,
@@ -132,9 +130,7 @@ async def send_sunday_service_poll(ctx: ContextTypes.DEFAULT_TYPE, update: Optio
 
 async def send_cell_group_poll(ctx: ContextTypes.DEFAULT_TYPE, update: Optional[Update] = None):
     target_chat = _effective_target_chat(update)
-    now = datetime.now()
-    if SGT:
-        now = now.astimezone(SGT)
+    now = datetime.now(SGT)
     target = upcoming_friday_for_poll(now)
     msg = await ctx.bot.send_poll(
         chat_id=target_chat,
@@ -148,9 +144,7 @@ async def send_cell_group_poll(ctx: ContextTypes.DEFAULT_TYPE, update: Optional[
 
 # ---------- Reminders ----------
 async def remind_sunday_service(ctx: ContextTypes.DEFAULT_TYPE, update: Optional[Update] = None):
-    now = datetime.now()
-    if SGT:
-        now = now.astimezone(SGT)
+    now = datetime.now(SGT)
     target_date = sunday_for_reminder(now)
     date_txt = format_date_plain(target_date)
 
@@ -164,9 +158,7 @@ async def remind_sunday_service(ctx: ContextTypes.DEFAULT_TYPE, update: Optional
         await _remind_with_reply_fallback(ctx, target_chat, None, "", text_plain)
 
 async def remind_cell_group(ctx: ContextTypes.DEFAULT_TYPE, update: Optional[Update] = None):
-    now = datetime.now()
-    if SGT:
-        now = now.astimezone(SGT)
+    now = datetime.now(SGT)
     target_date = friday_for_reminder(now)
     date_txt = format_date_plain(target_date)
 
@@ -226,6 +218,16 @@ async def id_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     await update.message.reply_text(f"Chat type: {chat.type}\nChat ID: {chat.id}")
 
+# ---- Announcement helper (so you see it scheduled) ----
+async def _announce_one_off(ctx: ContextTypes.DEFAULT_TYPE, when_local_str: str):
+    try:
+        await ctx.bot.send_message(
+            chat_id=DEFAULT_CHAT_ID,
+            text=f"🔔 One-off CG reminder scheduled for today at {when_local_str} SGT."
+        )
+    except Exception as e:
+        logging.warning(f"Announce failed: {e}")
+
 # ---------- Scheduler ----------
 def schedule_jobs(app: Application):
     jq = app.job_queue
@@ -240,16 +242,24 @@ def schedule_jobs(app: Application):
 
     # --- ONE-OFF TEST: CG reminder today at 5:25 PM SGT ---
     try:
-        now = datetime.now()
-        if SGT:
-            now = now.astimezone(SGT)
-        test_dt = now.replace(hour=17, minute=25, second=0, microsecond=0)
-        if test_dt > now:
-            jq.run_once(remind_cell_group, when=test_dt, name="TEST_CG_1725")
-            logging.info(f"One-off CG reminder scheduled at {test_dt.isoformat()}")
+        now_local = datetime.now(SGT)
+        target_local = now_local.replace(hour=17, minute=25, second=0, microsecond=0)
+        # compute delay in seconds; if past, use 2 minutes fallback
+        delay_sec = (target_local - now_local).total_seconds()
+        if delay_sec <= 0:
+            delay_sec = 120.0
+            when_str = (now_local + timedelta(seconds=delay_sec)).strftime("%H:%M")
         else:
-            jq.run_once(remind_cell_group, when=now + timedelta(minutes=2), name="TEST_CG_1725_FALLBACK")
-            logging.info("Past 17:25 SGT—scheduled one-off CG reminder for 2 minutes from now.")
+            when_str = target_local.strftime("%H:%M")
+
+        jq.run_once(remind_cell_group, when=delay_sec, name="TEST_CG_1725")
+
+        # tiny immediate announce so you know it's scheduled
+        async def _announce(ctx: ContextTypes.DEFAULT_TYPE):
+            await _announce_one_off(ctx, when_str)
+        jq.run_once(_announce, when=0.1, name="TEST_CG_1725_ANNOUNCE")
+
+        logging.info(f"One-off CG reminder scheduled in {delay_sec:.1f}s (local {when_str} SGT)")
     except Exception as e:
         logging.warning(f"Failed to schedule one-off test reminder: {e}")
 
