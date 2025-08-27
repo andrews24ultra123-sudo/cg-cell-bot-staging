@@ -25,7 +25,7 @@ except Exception:
         SGT = pytz.timezone("Asia/Singapore")
     except Exception:
         from datetime import timezone as _tz
-        SGT = _tz.utc  # last-resort; use UTC
+        SGT = _tz.utc  # last resort; use UTC
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logging.info(f"python-telegram-bot version: {getattr(telegram, '__version__', 'unknown')}")
@@ -114,7 +114,7 @@ async def _remind_with_reply_fallback(
         except Exception as e2:
             logging.exception(f"Plain reminder also failed: {e2}")
 
-# ---------- Poll senders ----------
+# ---------- Poll senders (with fun emojis) ----------
 async def send_sunday_service_poll(ctx: ContextTypes.DEFAULT_TYPE, update: Optional[Update] = None):
     target_chat = _effective_target_chat(update)
     now = datetime.now(SGT)
@@ -122,7 +122,13 @@ async def send_sunday_service_poll(ctx: ContextTypes.DEFAULT_TYPE, update: Optio
     msg = await ctx.bot.send_poll(
         chat_id=target_chat,
         question=f"Sunday Service – {format_date_long(target)}",
-        options=["9am", "11.15am", "Serving", "Lunch", "Invited a friend"],
+        options=[
+            "⏰ 9am",
+            "🕚 11.15am",
+            "🙋 Serving",
+            "🍽️ Lunch",
+            "🧑‍🤝‍🧑 Invited a friend",
+        ],
         is_anonymous=False,
         allows_multiple_answers=True,
     )
@@ -136,7 +142,11 @@ async def send_cell_group_poll(ctx: ContextTypes.DEFAULT_TYPE, update: Optional[
     msg = await ctx.bot.send_poll(
         chat_id=target_chat,
         question=f"Cell Group – {format_date_long(target)}",
-        options=["Dinner 7.15pm", "CG 8.15pm", "Cannot make it"],
+        options=[
+            "🍽️ Dinner 7.15pm",
+            "⛪ CG 8.15pm",
+            "❌ Cannot make it",
+        ],
         is_anonymous=False,
         allows_multiple_answers=False,
     )
@@ -172,13 +182,16 @@ async def remind_cell_group(ctx: ContextTypes.DEFAULT_TYPE, update: Optional[Upd
         target_chat = _effective_target_chat(update)
         await _remind_with_reply_fallback(ctx, target_chat, None, "", text_plain)
 
-# ---------- One-off helper (auto-post poll if needed) ----------
+# ---------- One-off helpers (auto-post poll if needed) ----------
 async def one_off_cg_reminder(ctx: ContextTypes.DEFAULT_TYPE):
-    # If no CG poll exists, post one now in DEFAULT_CHAT_ID
     if STATE.get("cg_poll") is None:
         await send_cell_group_poll(ctx, update=None)
-    # Then send the reminder
     await remind_cell_group(ctx, update=None)
+
+async def one_off_svc_reminder(ctx: ContextTypes.DEFAULT_TYPE):
+    if STATE.get("svc_poll") is None:
+        await send_sunday_service_poll(ctx, update=None)
+    await remind_sunday_service(ctx, update=None)
 
 def _parse_hhmm_to_delay_seconds(hhmm: Optional[str]) -> tuple[float, str]:
     now_local = datetime.now(SGT)
@@ -197,7 +210,6 @@ def _parse_hhmm_to_delay_seconds(hhmm: Optional[str]) -> tuple[float, str]:
         raise ValueError("Invalid time (00:00 to 23:59)")
     target = now_local.replace(hour=h, minute=m, second=0, microsecond=0)
     if target <= now_local:
-        # schedule a couple minutes ahead if time already passed
         target = now_local + timedelta(minutes=2)
     return ((target - now_local).total_seconds(), target.strftime("%H:%M"))
 
@@ -214,11 +226,12 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "  - Fri 11:30 PM → post poll\n"
         "  - Sat 12:00 PM → reminder\n\n"
         "Manual commands:\n"
-        "/cgpoll → post CG poll (posts in the chat you send this from)\n"
+        "/cgpoll → post CG poll (in this chat)\n"
         "/cgrm → reminder for last CG poll\n"
-        "/sunpoll → post Service poll (posts in the chat you send this from)\n"
+        "/sunpoll → post Service poll (in this chat)\n"
         "/sunrm → reminder for last Service poll\n"
-        "/armtest HH:MM → arm a one-off CG reminder today (auto-posts poll if needed)\n"
+        "/armtest HH:MM → one-off CG reminder today (auto-posts poll if needed)\n"
+        "/armsun HH:MM → one-off Sunday Service reminder today (auto-posts poll if needed)\n"
         "/testpoll → test poll\n"
         "/id → show chat id"
     )
@@ -250,7 +263,6 @@ async def id_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Chat type: {chat.type}\nChat ID: {chat.id}")
 
 async def armtest_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    # Parse time from args (optional)
     try:
         time_arg = ctx.args[0] if ctx.args else None
         delay_sec, when_str = _parse_hhmm_to_delay_seconds(time_arg)
@@ -258,10 +270,25 @@ async def armtest_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ {e}\nUsage: /armtest 17:45")
         return
 
-    # Announce + schedule
-    await update.message.reply_text(f"🔔 One-off CG reminder scheduled for today at {when_str} SGT. "
-                                    f"(Will auto-post a CG poll if none exists.)")
+    await update.message.reply_text(
+        f"🔔 One-off **Cell Group** reminder scheduled for today at {when_str} SGT.\n"
+        f"(Will auto-post a CG poll if none exists.)"
+    )
     ctx.job_queue.run_once(one_off_cg_reminder, when=delay_sec, name=f"ONE_OFF_CG_{when_str}")
+
+async def armsun_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        time_arg = ctx.args[0] if ctx.args else None
+        delay_sec, when_str = _parse_hhmm_to_delay_seconds(time_arg)
+    except Exception as e:
+        await update.message.reply_text(f"❌ {e}\nUsage: /armsun 11:30")
+        return
+
+    await update.message.reply_text(
+        f"🔔 One-off **Sunday Service** reminder scheduled for today at {when_str} SGT.\n"
+        f"(Will auto-post a Sunday Service poll if none exists.)"
+    )
+    ctx.job_queue.run_once(one_off_svc_reminder, when=delay_sec, name=f"ONE_OFF_SVC_{when_str}")
 
 # ---------- Scheduler ----------
 def schedule_jobs(app: Application):
@@ -292,6 +319,7 @@ def main():
     app.add_handler(CommandHandler("testpoll", testpoll_cmd))
     app.add_handler(CommandHandler("id", id_cmd))
     app.add_handler(CommandHandler("armtest", armtest_cmd))
+    app.add_handler(CommandHandler("armsun", armsun_cmd))
 
     # Errors
     app.add_error_handler(error_handler)
