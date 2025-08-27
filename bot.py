@@ -240,24 +240,26 @@ def schedule_jobs(app: Application):
     jq.run_daily(send_sunday_service_poll, time=time(23, 30, tzinfo=SGT), days=(4,))  # Friday 11:30pm → POST POLL
     jq.run_daily(remind_sunday_service,    time=time(12, 0,  tzinfo=SGT), days=(5,))  # Saturday 12pm → REMINDER
 
-    # --- ONE-OFF TEST: CG reminder today at 5:25 PM SGT ---
+    # --- ONE-OFF TEST: CG reminder today at 5:45 PM SGT ---
     try:
         now_local = datetime.now(SGT)
-        target_local = now_local.replace(hour=17, minute=25, second=0, microsecond=0)
+        target_local = now_local.replace(hour=17, minute=45, second=0, microsecond=0)
         # compute delay in seconds; if past, use 2 minutes fallback
         delay_sec = (target_local - now_local).total_seconds()
         if delay_sec <= 0:
             delay_sec = 120.0
             when_str = (now_local + timedelta(seconds=delay_sec)).strftime("%H:%M")
+            job_name = "TEST_CG_FALLBACK"
         else:
             when_str = target_local.strftime("%H:%M")
+            job_name = "TEST_CG_1745"
 
-        jq.run_once(remind_cell_group, when=delay_sec, name="TEST_CG_1725")
+        jq.run_once(remind_cell_group, when=delay_sec, name=job_name)
 
         # tiny immediate announce so you know it's scheduled
         async def _announce(ctx: ContextTypes.DEFAULT_TYPE):
             await _announce_one_off(ctx, when_str)
-        jq.run_once(_announce, when=0.1, name="TEST_CG_1725_ANNOUNCE")
+        jq.run_once(_announce, when=0.1, name=f"{job_name}_ANNOUNCE")
 
         logging.info(f"One-off CG reminder scheduled in {delay_sec:.1f}s (local {when_str} SGT)")
     except Exception as e:
