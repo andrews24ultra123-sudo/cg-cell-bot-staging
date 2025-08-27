@@ -12,7 +12,7 @@ TOKEN = "8179378309:AAGbscsJJ0ScMKEna_j-2kVfrcx0TL8Mn80"
 DEFAULT_CHAT_ID = -4803745789  # your group chat ID
 
 # Pin polls? (True/False)
-PIN_POLLS = True  # pin each new poll
+PIN_POLLS = True  # keep pinning enabled
 
 SGT = ZoneInfo("Asia/Singapore")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -38,6 +38,18 @@ def upcoming_friday(now_dt: datetime):
 
 def upcoming_sunday(now_dt: datetime):
     return next_weekday_date(now_dt, 6)
+
+def ordinal(n: int) -> str:
+    # 1st, 2nd, 3rd, 4th ... with 11th–13th exception
+    if 10 <= n % 100 <= 20:
+        suf = "th"
+    else:
+        suf = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suf}"
+
+def format_date_long(d) -> str:
+    # e.g., 31st August 2025 (Sun)
+    return f"{ordinal(d.day)} {d.strftime('%B %Y')} ({d.strftime('%a')})"
 
 def _effective_target_chat(update: Optional[Update]) -> int:
     """
@@ -91,7 +103,7 @@ async def send_sunday_service_poll(ctx: ContextTypes.DEFAULT_TYPE, update: Optio
     target = upcoming_sunday(now)
     msg = await ctx.bot.send_poll(
         chat_id=target_chat,
-        question=f"Sunday Service – {target:%Y-%m-%d (%a)}",
+        question=f"Sunday Service – {format_date_long(target)}",
         options=["9am", "11.15am", "Serving", "Lunch", "Invited a friend"],
         is_anonymous=False,
         allows_multiple_answers=True,
@@ -105,7 +117,7 @@ async def send_cell_group_poll(ctx: ContextTypes.DEFAULT_TYPE, update: Optional[
     target = upcoming_friday(now)
     msg = await ctx.bot.send_poll(
         chat_id=target_chat,
-        question=f"Cell Group – {target:%Y-%m-%d (%a)}",
+        question=f"Cell Group – {format_date_long(target)}",
         options=["Dinner 7.15pm", "CG 8.15pm", "Cannot make it"],
         is_anonymous=False,
         allows_multiple_answers=False,
@@ -213,7 +225,7 @@ def schedule_jobs(app: Application):
     jq.run_daily(send_sunday_service_poll, time=time(23, 30, tzinfo=SGT), days=(4,))  # Friday 11:30pm → POST POLL
     jq.run_daily(remind_sunday_service,    time=time(12, 0,  tzinfo=SGT), days=(5,))  # Saturday 12pm → REMINDER
 
-# ---------- Global error handler (prevents crashes) ----------
+# ---------- Global error handler ----------
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logging.exception("Unhandled exception while handling update: %s", update, exc_info=context.error)
 
@@ -237,7 +249,6 @@ def main():
     schedule_jobs(app)
 
     logging.info("Bot starting…")
-    # Drop any backlog to avoid old updates causing issues after privacy change
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
