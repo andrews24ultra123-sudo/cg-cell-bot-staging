@@ -1,5 +1,5 @@
 import logging
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from datetime import datetime, timedelta, time
 from zoneinfo import ZoneInfo
 from typing import Optional, Dict
@@ -9,8 +9,8 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ======== HARD-CODED TOKEN & DEFAULT CHAT ID ========
 TOKEN = "8179378309:AAGbscsJJ0ScMKEna_j-2kVfrcx0TL8Mn80"
-# This is only used if you manually run commands in a different chat.
-DEFAULT_CHAT_ID = 54380770  # personal chat ID
+# Default target when jobs run or when commands are sent outside a chat
+DEFAULT_CHAT_ID = -4803745789  # <- your group chat ID
 
 # Pin polls? (True/False)
 PIN_POLLS = False
@@ -18,7 +18,7 @@ PIN_POLLS = False
 SGT = ZoneInfo("Asia/Singapore")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-# ---------- Poll tracking (now stores chat_id + message_id) ----------
+# ---------- Poll tracking (stores chat_id + message_id) ----------
 @dataclass
 class PollRef:
     chat_id: int
@@ -34,10 +34,10 @@ def next_weekday_date(now_dt: datetime, weekday: int):
         days_ahead = 7
     return (now_dt + timedelta(days=days_ahead)).date()
 
-def upcoming_friday(now_dt: datetime): 
+def upcoming_friday(now_dt: datetime):
     return next_weekday_date(now_dt, 4)
 
-def upcoming_sunday(now_dt: datetime): 
+def upcoming_sunday(now_dt: datetime):
     return next_weekday_date(now_dt, 6)
 
 def _effective_target_chat(update: Optional[Update]) -> int:
@@ -58,14 +58,14 @@ async def _safe_pin(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: in
         logging.warning(f"Pin failed: {e}")
 
 async def _remind_with_reply_fallback(
-    ctx: ContextTypes.DEFAULT_TYPE, 
-    target_chat_id: int, 
-    reply_to_msg_id: Optional[int], 
-    text_reply: str, 
-    text_plain: str
+    ctx: ContextTypes.DEFAULT_TYPE,
+    target_chat_id: int,
+    reply_to_msg_id: Optional[int],
+    text_reply: str,
+    text_plain: str,
 ):
     """
-    Try to reply to the original poll; if it fails (wrong chat / deleted), 
+    Try to reply to the original poll; if it fails (wrong chat / deleted),
     send a plain reminder to the target chat.
     """
     try:
@@ -87,7 +87,6 @@ async def _remind_with_reply_fallback(
 
 # ---------- Poll senders ----------
 async def send_sunday_service_poll(ctx: ContextTypes.DEFAULT_TYPE, update: Optional[Update] = None):
-    # Post poll in the chat where command was issued; else default
     target_chat = _effective_target_chat(update)
     now = datetime.now(SGT)
     target = upcoming_sunday(now)
@@ -127,7 +126,6 @@ async def remind_sunday_service(ctx: ContextTypes.DEFAULT_TYPE, update: Optional
             text_plain="⏰ Reminder: Please vote on the Sunday Service poll.",
         )
     else:
-        # No saved poll; send to the chat where command came from or default
         target_chat = _effective_target_chat(update)
         await _remind_with_reply_fallback(
             ctx,
