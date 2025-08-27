@@ -1,10 +1,11 @@
 import logging
 from datetime import datetime, timedelta, time
 from zoneinfo import ZoneInfo
-from telegram import ReplyParameters
+
+from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# ======== HARD-CODED TOKEN & GROUP CHAT ID ========
+# ======== HARD-CODED TOKEN & CHAT ID ========
 TOKEN = "8179378309:AAGbscsJJ0ScMKEna_j-2kVfrcx0TL8Mn80"
 CHAT_ID = 54380770  # personal chat ID
 
@@ -24,8 +25,11 @@ def next_weekday_date(now_dt: datetime, weekday: int):
         days_ahead = 7
     return (now_dt + timedelta(days=days_ahead)).date()
 
-def upcoming_friday(now_dt: datetime): return next_weekday_date(now_dt, 4)
-def upcoming_sunday(now_dt: datetime): return next_weekday_date(now_dt, 6)
+def upcoming_friday(now_dt: datetime): 
+    return next_weekday_date(now_dt, 4)
+
+def upcoming_sunday(now_dt: datetime): 
+    return next_weekday_date(now_dt, 6)
 
 # ---------- Poll senders ----------
 async def send_sunday_service_poll(ctx: ContextTypes.DEFAULT_TYPE):
@@ -62,31 +66,45 @@ async def send_cell_group_poll(ctx: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logging.warning(f"Pin failed: {e}")
 
-# ---------- Reminders ----------
+# ---------- Reminders (fixed: no ReplyParameters) ----------
 async def remind_sunday_service(ctx: ContextTypes.DEFAULT_TYPE):
     poll_id = STATE.get("svc_poll_msg_id")
-    if poll_id:
-        await ctx.bot.send_message(
-            chat_id=CHAT_ID,
-            text="⏰ Reminder: Please vote on the Sunday Service poll above 🙏",
-            reply_parameters=ReplyParameters(message_id=poll_id),
-        )
-    else:
-        await ctx.bot.send_message(chat_id=CHAT_ID, text="⏰ Reminder: Please vote on the Sunday Service poll.")
+    try:
+        if poll_id:
+            await ctx.bot.send_message(
+                chat_id=CHAT_ID,
+                text="⏰ Reminder: Please vote on the Sunday Service poll above 🙏",
+                reply_to_message_id=poll_id,
+                allow_sending_without_reply=True,
+            )
+        else:
+            await ctx.bot.send_message(
+                chat_id=CHAT_ID,
+                text="⏰ Reminder: Please vote on the Sunday Service poll."
+            )
+    except Exception as e:
+        logging.exception(f"/sunrm failed: {e}")
 
 async def remind_cell_group(ctx: ContextTypes.DEFAULT_TYPE):
     poll_id = STATE.get("cg_poll_msg_id")
-    if poll_id:
-        await ctx.bot.send_message(
-            chat_id=CHAT_ID,
-            text="⏰ Reminder: Please vote on the Cell Group poll above 👆",
-            reply_parameters=ReplyParameters(message_id=poll_id),
-        )
-    else:
-        await ctx.bot.send_message(chat_id=CHAT_ID, text="⏰ Reminder: Please vote on the Cell Group poll.")
+    try:
+        if poll_id:
+            await ctx.bot.send_message(
+                chat_id=CHAT_ID,
+                text="⏰ Reminder: Please vote on the Cell Group poll above 👆",
+                reply_to_message_id=poll_id,
+                allow_sending_without_reply=True,
+            )
+        else:
+            await ctx.bot.send_message(
+                chat_id=CHAT_ID,
+                text="⏰ Reminder: Please vote on the Cell Group poll."
+            )
+    except Exception as e:
+        logging.exception(f"/cgrm failed: {e}")
 
 # ---------- Commands ----------
-async def start(update, ctx):
+async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Schedule (SGT):\n"
         "• Cell Group (Friday):\n"
@@ -102,14 +120,23 @@ async def start(update, ctx):
         "/cgrm → reminder for last CG poll\n"
         "/sunpoll → post Service poll\n"
         "/sunrm → reminder for last Service poll\n"
-        "/testpoll → test poll"
+        "/testpoll → test poll\n"
+        "/id → show chat id"
     )
 
-async def cgpoll_cmd(update, ctx): await send_cell_group_poll(ctx)
-async def cgrm_cmd(update, ctx):   await remind_cell_group(ctx)
-async def sunpoll_cmd(update, ctx):await send_sunday_service_poll(ctx)
-async def sunrm_cmd(update, ctx):  await remind_sunday_service(ctx)
-async def testpoll_cmd(update, ctx):
+async def cgpoll_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await send_cell_group_poll(ctx)
+
+async def cgrm_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await remind_cell_group(ctx)
+
+async def sunpoll_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await send_sunday_service_poll(ctx)
+
+async def sunrm_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await remind_sunday_service(ctx)
+
+async def testpoll_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await ctx.bot.send_poll(
         chat_id=CHAT_ID,
         question="🚀 Test Poll – working?",
@@ -117,6 +144,10 @@ async def testpoll_cmd(update, ctx):
         is_anonymous=False,
         allows_multiple_answers=False,
     )
+
+async def id_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    await update.message.reply_text(f"Chat type: {chat.type}\nChat ID: {chat.id}")
 
 # ---------- Scheduler ----------
 def schedule_jobs(app: Application):
@@ -141,6 +172,7 @@ def main():
     app.add_handler(CommandHandler("sunpoll", sunpoll_cmd))
     app.add_handler(CommandHandler("sunrm", sunrm_cmd))
     app.add_handler(CommandHandler("testpoll", testpoll_cmd))
+    app.add_handler(CommandHandler("id", id_cmd))
 
     # Jobs
     schedule_jobs(app)
