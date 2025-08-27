@@ -192,4 +192,48 @@ async def sunrm_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def testpoll_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     target_chat = _effective_target_chat(update)
-    awa
+    await ctx.bot.send_poll(
+        chat_id=target_chat,
+        question="🚀 Test Poll – working?",
+        options=["Yes 👍", "No 👎"],
+        is_anonymous=False,
+        allows_multiple_answers=False,
+    )
+
+async def id_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    await update.message.reply_text(f"Chat type: {chat.type}\nChat ID: {chat.id}")
+
+# ---------- Scheduler ----------
+def schedule_jobs(app: Application):
+    jq = app.job_queue
+    # CG: poll Sun, reminders Mon + Thu + Fri(3pm)
+    jq.run_daily(lambda ctx: send_cell_group_poll(ctx), time=time(18, 0, tzinfo=SGT), days=(6,))  # Sunday 6pm → POST POLL
+    jq.run_daily(lambda ctx: remind_cell_group(ctx),    time=time(18, 0, tzinfo=SGT), days=(0,))  # Monday 6pm → REMINDER
+    jq.run_daily(lambda ctx: remind_cell_group(ctx),    time=time(18, 0, tzinfo=SGT), days=(3,))  # Thursday 6pm → REMINDER
+    jq.run_daily(lambda ctx: remind_cell_group(ctx),    time=time(15, 0, tzinfo=SGT), days=(4,))  # Friday 3pm → REMINDER
+    # Service: poll Fri, reminder Sat
+    jq.run_daily(lambda ctx: send_sunday_service_poll(ctx), time=time(23, 30, tzinfo=SGT), days=(4,))  # Friday 11:30pm → POST POLL
+    jq.run_daily(lambda ctx: remind_sunday_service(ctx),    time=time(12, 0,  tzinfo=SGT), days=(5,))  # Saturday 12pm → REMINDER
+
+# ---------- Main ----------
+def main():
+    app = Application.builder().token(TOKEN).build()
+
+    # Commands
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("cgpoll", cgpoll_cmd))
+    app.add_handler(CommandHandler("cgrm", cgrm_cmd))
+    app.add_handler(CommandHandler("sunpoll", sunpoll_cmd))
+    app.add_handler(CommandHandler("sunrm", sunrm_cmd))
+    app.add_handler(CommandHandler("testpoll", testpoll_cmd))
+    app.add_handler(CommandHandler("id", id_cmd))
+
+    # Jobs
+    schedule_jobs(app)
+
+    logging.info("Bot starting…")
+    app.run_polling(allowed_updates=None)
+
+if __name__ == "__main__":
+    main()
