@@ -238,6 +238,21 @@ def schedule_jobs(app: Application):
     jq.run_daily(send_sunday_service_poll, time=time(23, 30, tzinfo=SGT), days=(4,))  # Friday 11:30pm → POST POLL
     jq.run_daily(remind_sunday_service,    time=time(12, 0,  tzinfo=SGT), days=(5,))  # Saturday 12pm → REMINDER
 
+    # --- ONE-OFF TEST: CG reminder today at 5:25 PM SGT ---
+    try:
+        now = datetime.now()
+        if SGT:
+            now = now.astimezone(SGT)
+        test_dt = now.replace(hour=17, minute=25, second=0, microsecond=0)
+        if test_dt > now:
+            jq.run_once(remind_cell_group, when=test_dt, name="TEST_CG_1725")
+            logging.info(f"One-off CG reminder scheduled at {test_dt.isoformat()}")
+        else:
+            jq.run_once(remind_cell_group, when=now + timedelta(minutes=2), name="TEST_CG_1725_FALLBACK")
+            logging.info("Past 17:25 SGT—scheduled one-off CG reminder for 2 minutes from now.")
+    except Exception as e:
+        logging.warning(f"Failed to schedule one-off test reminder: {e}")
+
 # ---------- Global error handler ----------
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logging.exception("Unhandled exception while handling update: %s", update, exc_info=context.error)
