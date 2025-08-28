@@ -8,6 +8,19 @@ import telegram
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
+# Try to import Days enum (PTB v20+). Fallback to integers if unavailable.
+try:
+    from telegram.ext import Days  # Days.MONDAY ... Days.SUNDAY
+except Exception:
+    class Days:
+        MONDAY = 0
+        TUESDAY = 1
+        WEDNESDAY = 2
+        THURSDAY = 3
+        FRIDAY = 4
+        SATURDAY = 5
+        SUNDAY = 6
+
 # ======== HARD-CODED TOKEN & DEFAULT CHAT ID ========
 TOKEN = "8179378309:AAGbscsJJ0ScMKEna_j-2kVfrcx0TL8Mn80"
 DEFAULT_CHAT_ID = -4803745789  # your group chat ID
@@ -51,10 +64,10 @@ def next_or_same_weekday_date(now_dt: datetime, weekday: int):
     return (now_dt + timedelta(days=days_ahead)).date()
 
 def upcoming_friday_for_poll(now_dt: datetime):
-    return next_weekday_date_exclusive(now_dt, 4)  # Fri = 4 (Python weekday)
+    return next_weekday_date_exclusive(now_dt, 4)  # Friday
 
 def upcoming_sunday_for_poll(now_dt: datetime):
-    return next_weekday_date_exclusive(now_dt, 6)  # Sun = 6 (Python weekday)
+    return next_weekday_date_exclusive(now_dt, 6)  # Sunday
 
 def friday_for_reminder(now_dt: datetime):
     return next_or_same_weekday_date(now_dt, 4)
@@ -114,10 +127,15 @@ async def _remind_with_reply_fallback(
         except Exception as e2:
             logging.exception(f"Plain reminder also failed: {e2}")
 
-# ---------- Poll senders (with fun emojis) ----------
+# ---------- Poll senders (with weekday guards + emojis) ----------
 async def send_sunday_service_poll(ctx: ContextTypes.DEFAULT_TYPE, update: Optional[Update] = None):
-    target_chat = _effective_target_chat(update)
     now = datetime.now(SGT)
+    # Guardrail: only post on Friday (23:30 scheduled)
+    if now.weekday() != 4:  # 4 = Friday
+        logging.warning(f"Service poll triggered on {now:%a %Y-%m-%d %H:%M %Z}; skipping (expected Friday).")
+        return
+
+    target_chat = _effective_target_chat(update)
     target = upcoming_sunday_for_poll(now)
     msg = await ctx.bot.send_poll(
         chat_id=target_chat,
@@ -136,8 +154,13 @@ async def send_sunday_service_poll(ctx: ContextTypes.DEFAULT_TYPE, update: Optio
     await _safe_pin(ctx, target_chat, msg.message_id)
 
 async def send_cell_group_poll(ctx: ContextTypes.DEFAULT_TYPE, update: Optional[Update] = None):
-    target_chat = _effective_target_chat(update)
     now = datetime.now(SGT)
+    # Guardrail: only post on Sunday (18:00 scheduled)
+    if now.weekday() != 6:  # 6 = Sunday
+        logging.warning(f"CG poll triggered on {now:%a %Y-%m-%d %H:%M %Z}; skipping (expected Sunday).")
+        return
+
+    target_chat = _effective_target_chat(update)
     target = upcoming_friday_for_poll(now)
     msg = await ctx.bot.send_poll(
         chat_id=target_chat,
@@ -224,13 +247,18 @@ def _next_occurrence(now: datetime, weekday: int, hh: int, mm: int) -> datetime:
 
 async def when_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(SGT)
-    next_cg = _next_occurrence(now, 6, 18, 0)   # Sun 18:00
-    next_svc = _next_occurrence(now, 4, 23, 30) # Fri 23:30
+    next_cg   = _next_occurrence(now, 6, 18, 0)   # Sun 18:00
+    next_svc  = _next_occurrence(now, 4, 23, 30)  # Fri 23:30
+    next_rm_m = _next_occurrence(now, 0, 18, 0)   # Mon 18:00
+    next_rm_t = _next_occurrence(now, 3, 18, 0)   # Thu 18:00
+    next_rm_f = _next_occurrence(now, 4, 15, 0)   # Fri 15:00
+    next_rs   = _next_occurrence(now, 5, 12, 0)   # Sat 12:00
     await update.message.reply_text(
-        "🗓️ Next schedules (SGT):\n"
-        f"• CG poll: {next_cg.strftime('%a %d %b %Y %H:%M')}\n"
-        f"• Service poll: {next_svc.strftime('%a %d %b %Y %H:%M')}\n"
-        "If you redeployed after a scheduled time, I'll auto-post once (catch-up)."
+        "🗓️ Next (SGT):\n"
+        f"• CG poll: {next_cg:%a %d %b %Y %H:%M}\n"
+        f"• Service poll: {next_svc:%a %d %b %Y %H:%M}\n"
+        f"• CG reminders: Mon {next_rm_m:%H:%M}, Thu {next_rm_t:%H:%M}, Fri {next_rm_f:%H:%M}\n"
+        f"• Service reminder: {next_rs:%a %d %b %Y %H:%M}"
     )
 
 # ---------- Commands ----------
@@ -312,31 +340,31 @@ async def armsun_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ---------- Scheduler ----------
 def schedule_jobs(app: Application):
     jq = app.job_queue
-    # CG: poll Sun, reminders Mon + Thu + Fri(3pm) — use Days enums to avoid off-by-one
-    jq.run_daily(send_cell_group_poll, time=time(18, 0, tzinfo=SGT), days=(Days.SUNDAY,))     # Sunday 6pm → POST POLL
-    jq.run_daily(remind_cell_group,    time=time(18, 0, tzinfo=SGT), days=(Days.MONDAY,))    # Monday 6pm → REMINDER
-    jq.run_daily(remind_cell_group,    time=time(18, 0, tzinfo=SGT), days=(Days.THURSDAY,))  # Thursday 6pm → REMINDER
-    jq.run_daily(remind_cell_group,    time=time(15, 0, tzinfo=SGT), days=(Days.FRIDAY,))    # Friday 3pm → REMINDER
-    # Service: poll Fri, reminder Sat
-    jq.run_daily(send_sunday_service_poll, time=time(23, 30, tzinfo=SGT), days=(Days.FRIDAY,))   # Friday 11:30pm → POST POLL
-    jq.run_daily(remind_sunday_service,    time=time(12,  0, tzinfo=SGT), days=(Days.SATURDAY,)) # Saturday 12pm → REMINDER
+    # CG: Sunday 6pm post, Mon/Thu 6pm + Fri 3pm reminders — using Days enums for clarity
+    jq.run_daily(send_cell_group_poll, time=time(18, 0, tzinfo=SGT), days=(Days.SUNDAY,))
+    jq.run_daily(remind_cell_group,    time=time(18, 0, tzinfo=SGT), days=(Days.MONDAY,))
+    jq.run_daily(remind_cell_group,    time=time(18, 0, tzinfo=SGT), days=(Days.THURSDAY,))
+    jq.run_daily(remind_cell_group,    time=time(15, 0, tzinfo=SGT), days=(Days.FRIDAY,))
+    # Sunday Service: Friday 11:30pm post, Saturday noon reminder
+    jq.run_daily(send_sunday_service_poll, time=time(23, 30, tzinfo=SGT), days=(Days.FRIDAY,))
+    jq.run_daily(remind_sunday_service,    time=time(12,  0, tzinfo=SGT), days=(Days.SATURDAY,))
 
 # ---------- Catch-up on start (posts once if you redeployed after the slot) ----------
 def catchup_on_start(app: Application):
     now = datetime.now(SGT)
-    # CG: If Sun 18:00 already passed this week and no CG poll yet, post once
+
+    # CG: if Sunday 18:00 already passed this week and no CG poll yet, post once
     if STATE.get("cg_poll") is None:
-        sun_target = datetime(now.year, now.month, now.day, 18, 0, tzinfo=SGT)
+        # Compute this week's Sunday 18:00
         days_to_sun = (6 - now.weekday()) % 7  # 6 = Sunday (Python weekday)
-        sun_target = sun_target + timedelta(days=days_to_sun)
+        sun_target = datetime(now.year, now.month, now.day, 18, 0, tzinfo=SGT) + timedelta(days=days_to_sun)
         if now > sun_target:
             app.job_queue.run_once(send_cell_group_poll, when=1, name="CATCHUP_CG")
 
-    # Service: If Fri 23:30 already passed this week and no Service poll yet, post once
+    # Service: if Friday 23:30 already passed this week and no Service poll yet, post once
     if STATE.get("svc_poll") is None:
-        fri_target = datetime(now.year, now.month, now.day, 23, 30, tzinfo=SGT)
-        days_to_fri = (4 - now.weekday()) % 7  # 4 = Friday (Python weekday)
-        fri_target = fri_target + timedelta(days=days_to_fri)
+        days_to_fri = (4 - now.weekday()) % 7  # 4 = Friday
+        fri_target = datetime(now.year, now.month, now.day, 23, 30, tzinfo=SGT) + timedelta(days=days_to_fri)
         if now > fri_target:
             app.job_queue.run_once(send_sunday_service_poll, when=1, name="CATCHUP_SVC")
 
