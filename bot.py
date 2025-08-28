@@ -51,10 +51,10 @@ def next_or_same_weekday_date(now_dt: datetime, weekday: int):
     return (now_dt + timedelta(days=days_ahead)).date()
 
 def upcoming_friday_for_poll(now_dt: datetime):
-    return next_weekday_date_exclusive(now_dt, 4)  # Fri = 4
+    return next_weekday_date_exclusive(now_dt, 4)  # Fri = 4 (Python weekday)
 
 def upcoming_sunday_for_poll(now_dt: datetime):
-    return next_weekday_date_exclusive(now_dt, 6)  # Sun = 6
+    return next_weekday_date_exclusive(now_dt, 6)  # Sun = 6 (Python weekday)
 
 def friday_for_reminder(now_dt: datetime):
     return next_or_same_weekday_date(now_dt, 4)
@@ -213,6 +213,26 @@ def _parse_hhmm_to_delay_seconds(hhmm: Optional[str]) -> tuple[float, str]:
         target = now_local + timedelta(minutes=2)
     return ((target - now_local).total_seconds(), target.strftime("%H:%M"))
 
+# ---------- Debug helpers ----------
+def _next_occurrence(now: datetime, weekday: int, hh: int, mm: int) -> datetime:
+    # Compute next occurrence in SGT for display
+    days_ahead = (weekday - now.weekday()) % 7
+    candidate = datetime(now.year, now.month, now.day, hh, mm, tzinfo=SGT) + timedelta(days=days_ahead)
+    if candidate <= now:
+        candidate += timedelta(days=7)
+    return candidate
+
+async def when_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    now = datetime.now(SGT)
+    next_cg = _next_occurrence(now, 6, 18, 0)   # Sun 18:00
+    next_svc = _next_occurrence(now, 4, 23, 30) # Fri 23:30
+    await update.message.reply_text(
+        "🗓️ Next schedules (SGT):\n"
+        f"• CG poll: {next_cg.strftime('%a %d %b %Y %H:%M')}\n"
+        f"• Service poll: {next_svc.strftime('%a %d %b %Y %H:%M')}\n"
+        "If you redeployed after a scheduled time, I'll auto-post once (catch-up)."
+    )
+
 # ---------- Commands ----------
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -232,6 +252,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/sunrm → reminder for last Service poll\n"
         "/armtest HH:MM → one-off CG reminder today (auto-posts poll if needed)\n"
         "/armsun HH:MM → one-off Sunday Service reminder today (auto-posts poll if needed)\n"
+        "/when → show next scheduled times\n"
         "/testpoll → test poll\n"
         "/id → show chat id"
     )
@@ -269,7 +290,6 @@ async def armtest_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ {e}\nUsage: /armtest 17:45")
         return
-
     await update.message.reply_text(
         f"🔔 One-off **Cell Group** reminder scheduled for today at {when_str} SGT.\n"
         f"(Will auto-post a CG poll if none exists.)"
@@ -283,7 +303,6 @@ async def armsun_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ {e}\nUsage: /armsun 11:30")
         return
-
     await update.message.reply_text(
         f"🔔 One-off **Sunday Service** reminder scheduled for today at {when_str} SGT.\n"
         f"(Will auto-post a Sunday Service poll if none exists.)"
@@ -293,14 +312,33 @@ async def armsun_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ---------- Scheduler ----------
 def schedule_jobs(app: Application):
     jq = app.job_queue
-    # CG: poll Sun, reminders Mon + Thu + Fri(3pm)
-    jq.run_daily(send_cell_group_poll, time=time(18, 0, tzinfo=SGT), days=(6,))  # Sunday 6pm → POST POLL
-    jq.run_daily(remind_cell_group,    time=time(18, 0, tzinfo=SGT), days=(0,))  # Monday 6pm → REMINDER
-    jq.run_daily(remind_cell_group,    time=time(18, 0, tzinfo=SGT), days=(3,))  # Thursday 6pm → REMINDER
-    jq.run_daily(remind_cell_group,    time=time(15, 0, tzinfo=SGT), days=(4,))  # Friday 3pm → REMINDER
+    # CG: poll Sun, reminders Mon + Thu + Fri(3pm) — use Days enums to avoid off-by-one
+    jq.run_daily(send_cell_group_poll, time=time(18, 0, tzinfo=SGT), days=(Days.SUNDAY,))     # Sunday 6pm → POST POLL
+    jq.run_daily(remind_cell_group,    time=time(18, 0, tzinfo=SGT), days=(Days.MONDAY,))    # Monday 6pm → REMINDER
+    jq.run_daily(remind_cell_group,    time=time(18, 0, tzinfo=SGT), days=(Days.THURSDAY,))  # Thursday 6pm → REMINDER
+    jq.run_daily(remind_cell_group,    time=time(15, 0, tzinfo=SGT), days=(Days.FRIDAY,))    # Friday 3pm → REMINDER
     # Service: poll Fri, reminder Sat
-    jq.run_daily(send_sunday_service_poll, time=time(23, 30, tzinfo=SGT), days=(4,))  # Friday 11:30pm → POST POLL
-    jq.run_daily(remind_sunday_service,    time=time(12, 0,  tzinfo=SGT), days=(5,))  # Saturday 12pm → REMINDER
+    jq.run_daily(send_sunday_service_poll, time=time(23, 30, tzinfo=SGT), days=(Days.FRIDAY,))   # Friday 11:30pm → POST POLL
+    jq.run_daily(remind_sunday_service,    time=time(12,  0, tzinfo=SGT), days=(Days.SATURDAY,)) # Saturday 12pm → REMINDER
+
+# ---------- Catch-up on start (posts once if you redeployed after the slot) ----------
+def catchup_on_start(app: Application):
+    now = datetime.now(SGT)
+    # CG: If Sun 18:00 already passed this week and no CG poll yet, post once
+    if STATE.get("cg_poll") is None:
+        sun_target = datetime(now.year, now.month, now.day, 18, 0, tzinfo=SGT)
+        days_to_sun = (6 - now.weekday()) % 7  # 6 = Sunday (Python weekday)
+        sun_target = sun_target + timedelta(days=days_to_sun)
+        if now > sun_target:
+            app.job_queue.run_once(send_cell_group_poll, when=1, name="CATCHUP_CG")
+
+    # Service: If Fri 23:30 already passed this week and no Service poll yet, post once
+    if STATE.get("svc_poll") is None:
+        fri_target = datetime(now.year, now.month, now.day, 23, 30, tzinfo=SGT)
+        days_to_fri = (4 - now.weekday()) % 7  # 4 = Friday (Python weekday)
+        fri_target = fri_target + timedelta(days=days_to_fri)
+        if now > fri_target:
+            app.job_queue.run_once(send_sunday_service_poll, when=1, name="CATCHUP_SVC")
 
 # ---------- Global error handler ----------
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -320,12 +358,14 @@ def main():
     app.add_handler(CommandHandler("id", id_cmd))
     app.add_handler(CommandHandler("armtest", armtest_cmd))
     app.add_handler(CommandHandler("armsun", armsun_cmd))
+    app.add_handler(CommandHandler("when", when_cmd))
 
     # Errors
     app.add_error_handler(error_handler)
 
     # Jobs
     schedule_jobs(app)
+    catchup_on_start(app)
 
     logging.info("Bot starting…")
     app.run_polling(drop_pending_updates=True)
