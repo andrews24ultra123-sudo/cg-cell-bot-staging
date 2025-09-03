@@ -21,7 +21,9 @@ except Exception:
         SATURDAY = 5
         SUNDAY = 6
 
-
+# ======== HARD-CODED TOKEN & DEFAULT CHAT ID ========
+TOKEN = "8179378309:AAGbscsJJ0ScMKEna_j-2kVfrcx0TL8Mn80"
+DEFAULT_CHAT_ID = -4911009091  # your group chat ID
 
 # Pin polls? (True/False)
 PIN_POLLS = True  # keep pinning enabled
@@ -153,7 +155,7 @@ async def send_sunday_service_poll(ctx: ContextTypes.DEFAULT_TYPE, update: Optio
 
 async def send_cell_group_poll(ctx: ContextTypes.DEFAULT_TYPE, update: Optional[Update] = None, *, force: bool = False):
     now = datetime.now(SGT)
-    # Guardrail: only post on Sunday unless force=True (for your 4 Sep test)
+    # Guardrail: only post on Sunday unless force=True (for one-off tests)
     if not force and now.weekday() != 6:  # 6 = Sunday
         logging.warning(f"CG poll triggered on {now:%a %Y-%m-%d %H:%M %Z}; skipping (expected Sunday).")
         return
@@ -325,20 +327,20 @@ def schedule_jobs(app: Application):
     jq.run_daily(send_sunday_service_poll, time=time(23, 30, tzinfo=SGT), days=(Days.FRIDAY,))
     jq.run_daily(remind_sunday_service,    time=time(12,  0, tzinfo=SGT), days=(Days.SATURDAY,))
 
-# ---------- One-off arm for 4 Sep test ----------
+# ---------- One-off arm for Sep 4 test (4:20 poll, 4:23 reminder) ----------
 def arm_sep4_test(app: Application):
     """
     Arms:
-      - CG poll on Thu, 4 Sep at 15:15 SGT (forced, bypass weekday guard)
-      - CG reminder on Thu, 4 Sep at 15:20 SGT
-    If already past, falls back to 2 minutes from now.
+      - CG poll on Thu, 4 Sep at 16:20 SGT (forced, bypass weekday guard)
+      - CG reminder on Thu, 4 Sep at 16:23 SGT
+    If already past, falls back to short delays (poll ~2 min; reminder ~3 min after poll).
     Also posts an immediate 'armed' message in the group.
     """
     jq = app.job_queue
     now = datetime.now(SGT)
 
-    poll_dt = datetime(2025, 9, 4, 15, 15, tzinfo=SGT)
-    rm_dt   = datetime(2025, 9, 4, 15, 20, tzinfo=SGT)
+    poll_dt = datetime(2025, 9, 4, 16, 20, tzinfo=SGT)
+    rm_dt   = datetime(2025, 9, 4, 16, 23, tzinfo=SGT)
 
     # compute delays with fallback
     poll_delay = (poll_dt - now).total_seconds()
@@ -351,14 +353,15 @@ def arm_sep4_test(app: Application):
         poll_info = poll_dt.strftime("%a %d %b %Y %H:%M")
 
     if rm_delay <= 0:
-        rm_delay = 240.0  # ensure reminder after poll fallback
+        # ensure reminder after poll fallback by ~3 more minutes
+        rm_delay = poll_delay + 180.0
         rm_info = (now + timedelta(seconds=rm_delay)).strftime("%a %d %b %Y %H:%M")
     else:
         rm_info = rm_dt.strftime("%a %d %b %Y %H:%M")
 
     # schedule
-    jq.run_once(one_off_cg_poll_force, when=poll_delay, name="ONEOFF_CG_POLL_2025-09-04_1515")
-    jq.run_once(remind_cell_group,     when=rm_delay,   name="ONEOFF_CG_REM_2025-09-04_1520")
+    jq.run_once(one_off_cg_poll_force, when=poll_delay, name="ONEOFF_CG_POLL_2025-09-04_1620")
+    jq.run_once(remind_cell_group,     when=rm_delay,   name="ONEOFF_CG_REM_2025-09-04_1623")
 
     # announce
     async def announce(ctx: ContextTypes.DEFAULT_TYPE):
@@ -396,7 +399,7 @@ def main():
     # Jobs
     schedule_jobs(app)
 
-    # Arm your specific one-off test for Thu, 4 Sep (3:15 poll, 3:20 reminder)
+    # Arm your specific one-off test for Thu, 4 Sep (4:20 poll, 4:23 reminder)
     arm_sep4_test(app)
 
     logging.info("Bot starting…")
@@ -404,4 +407,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
