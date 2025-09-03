@@ -21,9 +21,7 @@ except Exception:
         SATURDAY = 5
         SUNDAY = 6
 
-# ======== HARD-CODED TOKEN & DEFAULT CHAT ID ========
-TOKEN = "8448114982:AAFjVekkgALSK9M3CKc8K7KjrUSTcsvPvIc"
-DEFAULT_CHAT_ID = -1001819726736  # your group chat ID
+
 
 # Pin polls? (True/False)
 PIN_POLLS = True  # keep pinning enabled
@@ -406,3 +404,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
