@@ -127,7 +127,7 @@ async def _remind_with_reply_fallback(
         except Exception as e2:
             logging.exception(f"Plain reminder also failed: {e2}")
 
-# ---------- Poll senders (with weekday guards + emojis) ----------
+# ---------- Poll senders (weekday guards + emojis) ----------
 async def send_sunday_service_poll(ctx: ContextTypes.DEFAULT_TYPE, update: Optional[Update] = None):
     now = datetime.now(SGT)
     # Guardrail: only post on Friday (23:30 scheduled)
@@ -208,7 +208,7 @@ async def remind_cell_group(ctx: ContextTypes.DEFAULT_TYPE, update: Optional[Upd
 # ---------- One-off helpers (auto-post poll if needed) ----------
 async def one_off_cg_reminder(ctx: ContextTypes.DEFAULT_TYPE):
     if STATE.get("cg_poll") is None:
-        await send_cell_group_poll(ctx, update=None, force=True)  # ensure it posts even if not Sunday
+        await send_cell_group_poll(ctx, update=None, force=True)
     await remind_cell_group(ctx, update=None)
 
 async def one_off_svc_reminder(ctx: ContextTypes.DEFAULT_TYPE):
@@ -216,7 +216,7 @@ async def one_off_svc_reminder(ctx: ContextTypes.DEFAULT_TYPE):
         await send_sunday_service_poll(ctx, update=None)
     await remind_sunday_service(ctx, update=None)
 
-# Force-post CG poll (no weekday guard) — used by the Sep 4 one-off
+# Force-post CG poll (no weekday guard) — used by one-off arming
 async def one_off_cg_poll_force(ctx: ContextTypes.DEFAULT_TYPE):
     await send_cell_group_poll(ctx, update=None, force=True)
 
@@ -242,7 +242,6 @@ def _parse_hhmm_to_delay_seconds(hhmm: Optional[str]) -> tuple[float, str]:
 
 # ---------- Debug helpers ----------
 def _next_occurrence(now: datetime, weekday: int, hh: int, mm: int) -> datetime:
-    # Compute next occurrence in SGT for display
     days_ahead = (weekday - now.weekday()) % 7
     candidate = datetime(now.year, now.month, now.day, hh, mm, tzinfo=SGT) + timedelta(days=days_ahead)
     if candidate <= now:
@@ -315,32 +314,20 @@ async def id_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     await update.message.reply_text(f"Chat type: {chat.type}\nChat ID: {chat.id}")
 
-# ---------- Scheduler ----------
-def schedule_jobs(app: Application):
-    jq = app.job_queue
-    # CG: Sunday 6pm post, Mon/Thu 6pm + Fri 3pm reminders — using Days enums for clarity
-    jq.run_daily(send_cell_group_poll, time=time(18, 0, tzinfo=SGT), days=(Days.SUNDAY,))
-    jq.run_daily(remind_cell_group,    time=time(18, 0, tzinfo=SGT), days=(Days.MONDAY,))
-    jq.run_daily(remind_cell_group,    time=time(18, 0, tzinfo=SGT), days=(Days.THURSDAY,))
-    jq.run_daily(remind_cell_group,    time=time(15, 0, tzinfo=SGT), days=(Days.FRIDAY,))
-    # Sunday Service: Friday 11:30pm post, Saturday noon reminder
-    jq.run_daily(send_sunday_service_poll, time=time(23, 30, tzinfo=SGT), days=(Days.FRIDAY,))
-    jq.run_daily(remind_sunday_service,    time=time(12,  0, tzinfo=SGT), days=(Days.SATURDAY,))
-
-# ---------- One-off arm for Sep 4 test (4:20 poll, 4:23 reminder) ----------
-def arm_sep4_test(app: Application):
+# ---------- One-off "today at 16:40 & 16:44" arming ----------
+def arm_today_cg_test(app: Application):
     """
     Arms:
-      - CG poll on Thu, 4 Sep at 16:20 SGT (forced, bypass weekday guard)
-      - CG reminder on Thu, 4 Sep at 16:23 SGT
+      - CG poll today at 16:40 SGT (forced, bypass weekday guard)
+      - CG reminder today at 16:44 SGT
     If already past, falls back to short delays (poll ~2 min; reminder ~3 min after poll).
     Also posts an immediate 'armed' message in the group.
     """
     jq = app.job_queue
     now = datetime.now(SGT)
 
-    poll_dt = datetime(2025, 9, 4, 16, 20, tzinfo=SGT)
-    rm_dt   = datetime(2025, 9, 4, 16, 23, tzinfo=SGT)
+    poll_dt = now.replace(hour=16, minute=40, second=0, microsecond=0)
+    rm_dt   = now.replace(hour=16, minute=44, second=0, microsecond=0)
 
     # compute delays with fallback
     poll_delay = (poll_dt - now).total_seconds()
@@ -353,27 +340,68 @@ def arm_sep4_test(app: Application):
         poll_info = poll_dt.strftime("%a %d %b %Y %H:%M")
 
     if rm_delay <= 0:
-        # ensure reminder after poll fallback by ~3 more minutes
-        rm_delay = poll_delay + 180.0
+        # ensure reminder after poll fallback by ~4 more minutes
+        rm_delay = poll_delay + 240.0
         rm_info = (now + timedelta(seconds=rm_delay)).strftime("%a %d %b %Y %H:%M")
     else:
         rm_info = rm_dt.strftime("%a %d %b %Y %H:%M")
 
     # schedule
-    jq.run_once(one_off_cg_poll_force, when=poll_delay, name="ONEOFF_CG_POLL_2025-09-04_1620")
-    jq.run_once(remind_cell_group,     when=rm_delay,   name="ONEOFF_CG_REM_2025-09-04_1623")
+    jq.run_once(one_off_cg_poll_force, when=poll_delay, name="ONEOFF_CG_POLL_TODAY_1640")
+    jq.run_once(remind_cell_group,     when=rm_delay,   name="ONEOFF_CG_REM_TODAY_1644")
 
     # announce
     async def announce(ctx: ContextTypes.DEFAULT_TYPE):
         try:
             await ctx.bot.send_message(
                 chat_id=DEFAULT_CHAT_ID,
-                text=f"🔔 Armed test:\n• CG poll at {poll_info} SGT\n• CG reminder at {rm_info} SGT"
+                text=f"🔔 Armed one-off test:\n• CG poll at {poll_info} SGT\n• CG reminder at {rm_info} SGT"
             )
         except Exception as e:
             logging.warning(f"Announce failed: {e}")
 
     jq.run_once(announce, when=0.5, name="ONEOFF_CG_ANNOUNCE")
+
+# ---------- Scheduler ----------
+def schedule_jobs(app: Application):
+    jq = app.job_queue
+    # CG: Sunday 6pm post, Mon/Thu 6pm + Fri 3pm reminders — using Days enums for clarity
+    jq.run_daily(send_cell_group_poll, time=time(18, 0, tzinfo=SGT), days=(Days.SUNDAY,))
+    jq.run_daily(remind_cell_group,    time=time(18, 0, tzinfo=SGT), days=(Days.MONDAY,))
+    jq.run_daily(remind_cell_group,    time=time(18, 0, tzinfo=SGT), days=(Days.THURSDAY,))
+    jq.run_daily(remind_cell_group,    time=time(15, 0, tzinfo=SGT), days=(Days.FRIDAY,))
+    # Sunday Service: Friday 11:30pm post, Saturday noon reminder
+    jq.run_daily(send_sunday_service_poll, time=time(23, 30, tzinfo=SGT), days=(Days.FRIDAY,))
+    jq.run_daily(remind_sunday_service,    time=time(12,  0, tzinfo=SGT), days=(Days.SATURDAY,))
+
+# ---------- Catch-up on start (posts once if you redeployed after the slot) ----------
+def catchup_on_start(app: Application):
+    now = datetime.now(SGT)
+
+    # CG: if Sunday 18:00 already passed this week and no CG poll yet, post once
+    if STATE.get("cg_poll") is None:
+        days_to_sun = (6 - now.weekday()) % 7  # 6 = Sunday
+        sun_target = datetime(now.year, now.month, now.day, 18, 0, tzinfo=SGT) + timedelta(days=days_to_sun)
+        if now > sun_target:
+            app.job_queue.run_once(send_cell_group_poll, when=1, name="CATCHUP_CG")
+
+    # Service: if Friday 23:30 already passed this week and no Service poll yet, post once
+    if STATE.get("svc_poll") is None:
+        days_to_fri = (4 - now.weekday()) % 7  # 4 = Friday
+        fri_target = datetime(now.year, now.month, now.day, 23, 30, tzinfo=SGT) + timedelta(days=days_to_fri)
+        if now > fri_target:
+            app.job_queue.run_once(send_sunday_service_poll, when=1, name="CATCHUP_SVC")
+
+# ---------- Startup ping ----------
+async def _startup_ping(ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        me = await ctx.bot.get_me()
+        await ctx.bot.send_message(
+            chat_id=DEFAULT_CHAT_ID,
+            text=f"✅ Online as @{me.username} ({me.id}). Target chat: {DEFAULT_CHAT_ID}"
+        )
+    except Exception as e:
+        logging.warning(f"Startup ping failed: {e}")
 
 # ---------- Global error handler ----------
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -391,6 +419,8 @@ def main():
     app.add_handler(CommandHandler("sunrm", sunrm_cmd))
     app.add_handler(CommandHandler("testpoll", testpoll_cmd))
     app.add_handler(CommandHandler("id", id_cmd))
+    app.add_handler(CommandHandler("armtest", start))  # optional: reuse /start guidance
+    app.add_handler(CommandHandler("armsun", start))
     app.add_handler(CommandHandler("when", when_cmd))
 
     # Errors
@@ -398,9 +428,13 @@ def main():
 
     # Jobs
     schedule_jobs(app)
+    catchup_on_start(app)
 
-    # Arm your specific one-off test for Thu, 4 Sep (4:20 poll, 4:23 reminder)
-    arm_sep4_test(app)
+    # Startup confirmation
+    app.job_queue.run_once(_startup_ping, when=1, name="STARTUP_PING")
+
+    # Arm today's one-off test: CG poll 16:40, reminder 16:44 (SGT)
+    arm_today_cg_test(app)
 
     logging.info("Bot starting…")
     app.run_polling(drop_pending_updates=True)
