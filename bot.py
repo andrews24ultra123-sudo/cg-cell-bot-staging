@@ -83,10 +83,10 @@ def next_or_same_weekday_date(now_dt: datetime, weekday: int):
     days_ahead = (weekday - now_dt.weekday()) % 7
     return (now_dt + timedelta(days=days_ahead)).date()
 
-def upcoming_friday_for_poll(now_dt: datetime):  # question date for CG poll
+def upcoming_friday_for_poll(now_dt: datetime):  # CG poll question date
     return next_weekday_date_exclusive(now_dt, 4)
 
-def upcoming_sunday_for_poll(now_dt: datetime):  # question date for Service poll
+def upcoming_sunday_for_poll(now_dt: datetime):  # Service poll question date
     return next_weekday_date_exclusive(now_dt, 6)
 
 def friday_for_reminder(now_dt: datetime):
@@ -202,22 +202,22 @@ async def remind_cell_group(ctx: ContextTypes.DEFAULT_TYPE, update: Optional[Upd
     else:
         await ctx.bot.send_message(DEFAULT_CHAT_ID, f"⏰ Reminder: Please vote on the Cell Group poll for {date_txt}.")
 
-# ✅ Force reminder (ignores weekday guard; still replies to poll if possible)
+# ==== Forced versions for one-off tests (ignore weekday/time guards) ====
+async def post_cg_poll_force(ctx: ContextTypes.DEFAULT_TYPE):
+    now = datetime.now(SGT)
+    await _send_cg_poll(ctx, DEFAULT_CHAT_ID, upcoming_friday_for_poll(now))
+
 async def remind_cell_group_force(ctx: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(SGT)
-    date_txt = format_date_plain(friday_for_reminder(now))
     ref = STATE.get("cg_poll")
+    date_txt = format_date_plain(friday_for_reminder(now))
     if isinstance(ref, PollRef):
         await ctx.bot.send_message(ref.chat_id, f"⏰ Reminder: Please vote on the Cell Group poll above for {date_txt}.",
                                    reply_to_message_id=ref.message_id, allow_sending_without_reply=True)
     else:
         await ctx.bot.send_message(DEFAULT_CHAT_ID, f"⏰ Reminder: Please vote on the Cell Group poll for {date_txt}.")
 
-# Wrapper for job queue to force-post CG poll
-async def post_cg_poll_force(ctx: ContextTypes.DEFAULT_TYPE):
-    await send_cell_group_poll(ctx, update=None, force=True)
-
-# ---------- /when helper ----------
+# ---------- /when & /jobs ----------
 def _next_occurrence(now: datetime, weekday: int, hh: int, mm: int) -> datetime:
     days_ahead = (weekday - now.weekday()) % 7
     candidate = datetime(now.year, now.month, now.day, hh, mm, tzinfo=SGT) + timedelta(days=days_ahead)
@@ -226,12 +226,12 @@ def _next_occurrence(now: datetime, weekday: int, hh: int, mm: int) -> datetime:
 
 async def when_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(SGT)
-    next_cg   = _next_occurrence(now, 6, 18, 0)   # Sun 18:00
-    next_svc  = _next_occurrence(now, 4, 23, 30)  # Fri 23:30
-    next_rm_m = _next_occurrence(now, 0, 18, 0)   # Mon 18:00
-    next_rm_t = _next_occurrence(now, 3, 18, 0)   # Thu 18:00
-    next_rm_f = _next_occurrence(now, 4, 15, 0)   # Fri 15:00
-    next_rs   = _next_occurrence(now, 5, 12, 0)   # Sat 12:00
+    next_cg   = _next_occurrence(now, 6, 18, 0)
+    next_svc  = _next_occurrence(now, 4, 23, 30)
+    next_rm_m = _next_occurrence(now, 0, 18, 0)
+    next_rm_t = _next_occurrence(now, 3, 18, 0)
+    next_rm_f = _next_occurrence(now, 4, 15, 0)
+    next_rs   = _next_occurrence(now, 5, 12, 0)
     await update.message.reply_text(
         "🗓️ Next (SGT):\n"
         f"• CG poll: {next_cg:%a %d %b %Y %H:%M}\n"
@@ -240,7 +240,6 @@ async def when_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"• Service reminder: {next_rs:%a %d %b %Y %H:%M}"
     )
 
-# ---------- /jobs helper ----------
 async def jobs_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     jobs = ctx.job_queue.jobs()
     if not jobs:
@@ -301,37 +300,34 @@ async def id_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     await update.message.reply_text(f"Chat type: {chat.type}\nChat ID: {chat.id}")
 
-# ---------- Scheduler (weekly) ----------
+# ---------- Weekly Scheduler ----------
 def schedule_jobs(app: Application):
     jq = app.job_queue
-    # CG weekly
     jq.run_daily(send_cell_group_poll, time=time(18, 0, tzinfo=SGT), days=(Days.SUNDAY,))
     jq.run_daily(remind_cell_group,    time=time(18, 0, tzinfo=SGT), days=(Days.MONDAY,))
     jq.run_daily(remind_cell_group,    time=time(18, 0, tzinfo=SGT), days=(Days.THURSDAY,))
     jq.run_daily(remind_cell_group,    time=time(15, 0, tzinfo=SGT), days=(Days.FRIDAY,))
-    # Service weekly
     jq.run_daily(send_sunday_service_poll, time=time(23, 30, tzinfo=SGT), days=(Days.FRIDAY,))
     jq.run_daily(remind_sunday_service,    time=time(12,  0, tzinfo=SGT), days=(Days.SATURDAY,))
 
-# ---------- Catch-up on start (polls + reminders) ----------
+# ---------- Catch-up on start ----------
 def catchup_on_start(app: Application):
     _load_state()
     now = datetime.now(SGT)
     jq = app.job_queue
 
-    # Poll catch-up
     if STATE.get("cg_poll") is None:
-        days_to_sun = (6 - now.weekday()) % 7  # 6 = Sunday
+        days_to_sun = (6 - now.weekday()) % 7
         sun_target = datetime(now.year, now.month, now.day, 18, 0, tzinfo=SGT) + timedelta(days=days_to_sun)
         if now > sun_target:
             jq.run_once(send_cell_group_poll, when=2, name="CATCHUP_CG_POLL")
+
     if STATE.get("svc_poll") is None:
-        days_to_fri = (4 - now.weekday()) % 7  # 4 = Friday
+        days_to_fri = (4 - now.weekday()) % 7
         fri_target = datetime(now.year, now.month, now.day, 23, 30, tzinfo=SGT) + timedelta(days=days_to_fri)
         if now > fri_target:
             jq.run_once(send_sunday_service_poll, when=2, name="CATCHUP_SVC_POLL")
 
-    # Reminder catch-up (fires only on the correct weekday after the slot)
     def _maybe_catchup(weekday: int, hh: int, mm: int, job, name: str):
         if now.weekday() == weekday and now.time() >= time(hh, mm):
             jq.run_once(job, when=3, name=name)
@@ -341,7 +337,71 @@ def catchup_on_start(app: Application):
     _maybe_catchup(Days.FRIDAY,    15, 0, remind_cell_group,     "CATCHUP_CG_FRI_1500")
     _maybe_catchup(Days.SATURDAY,  12, 0, remind_sunday_service, "CATCHUP_SVC_SAT_1200")
 
-# ---------- Startup helpers ----------
+# ---------- One-off arm for TODAY (3:45 poll, 3:50 reminder) ----------
+def arm_today_1545_1550(app: Application):
+    """
+    Arms:
+      - CG poll TODAY at 15:45 SGT (forced)
+      - CG reminder TODAY at 15:50 SGT (forced)
+    If already past, falls back to poll ~60s from now and reminder ~5 minutes after poll.
+    Also posts an immediate 'armed' message in the group.
+    """
+    jq = app.job_queue
+    now = datetime.now(SGT)
+
+    poll_dt = datetime(now.year, now.month, now.day, 15, 45, 0, tzinfo=SGT)
+    rm_dt   = datetime(now.year, now.month, now.day, 15, 50, 0, tzinfo=SGT)
+
+    if poll_dt <= now:
+        poll_dt = now + timedelta(seconds=60)
+    if rm_dt <= now:
+        rm_dt = poll_dt + timedelta(minutes=5)
+
+    jq.run_once(post_cg_poll_force,      when=poll_dt, name="ONEOFF_CG_POLL_TODAY_1545")
+    jq.run_once(remind_cell_group_force, when=rm_dt,   name="ONEOFF_CG_REM_TODAY_1550")
+
+    async def announce(ctx: ContextTypes.DEFAULT_TYPE):
+        try:
+            await ctx.bot.send_message(
+                chat_id=DEFAULT_CHAT_ID,
+                text=f"🔔 Armed one-off test:\n• CG poll at {poll_dt.astimezone(SGT):%a %d %b %Y %H:%M} SGT"
+                     f"\n• CG reminder at {rm_dt.astimezone(SGT):%a %d %b %Y %H:%M} SGT"
+            )
+        except Exception as e:
+            logging.warning(f"Announce failed: {e}")
+    jq.run_once(announce, when=1, name="ONEOFF_CG_ANNOUNCE")
+
+# ---------- Build & Run (HTTP timeouts + SGT Defaults) ----------
+def build_app() -> Application:
+    request = HTTPXRequest(connect_timeout=20, read_timeout=30, write_timeout=30, pool_timeout=30)
+    defaults = Defaults(tzinfo=SGT)
+    app = Application.builder().token(TOKEN).request(request).defaults(defaults).build()
+
+    # Commands
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("cgpoll", cgpoll_cmd))
+    app.add_handler(CommandHandler("cgrm", cgrm_cmd))
+    app.add_handler(CommandHandler("sunpoll", sunpoll_cmd))
+    app.add_handler(CommandHandler("sunrm", sunrm_cmd))
+    app.add_handler(CommandHandler("when", when_cmd))
+    app.add_handler(CommandHandler("jobs", jobs_cmd))
+    app.add_handler(CommandHandler("testpoll", testpoll_cmd))
+    app.add_handler(CommandHandler("id", id_cmd))
+    app.add_error_handler(error_handler)
+
+    # Jobs
+    schedule_jobs(app)
+    catchup_on_start(app)
+
+    # Startup confirmations
+    app.job_queue.run_once(_startup_ping, when=1, name="STARTUP_PING")
+    app.job_queue.run_once(_register_commands, when=2, name="REGISTER_COMMANDS")
+
+    # Arm one-off test (today 15:45 / 15:50 SGT)
+    arm_today_1545_1550(app)
+
+    return app
+
 async def _startup_ping(ctx: ContextTypes.DEFAULT_TYPE):
     try:
         me = await ctx.bot.get_me()
@@ -366,96 +426,17 @@ async def _register_commands(ctx: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logging.warning(f"set_my_commands failed: {e}")
 
-# ---------- One-off arm for TODAY (3:20 poll, 3:25 reminder) ----------
-def arm_today_1520_1525(app: Application):
-    """
-    Arms:
-      - CG poll TODAY at 15:20 SGT (forced)
-      - CG reminder TODAY at 15:25 SGT (forced)
-    If already past, falls back to poll ~60s from now and reminder ~5 minutes after poll.
-    Also posts an immediate 'armed' message in the group.
-    """
-    jq = app.job_queue
-    now = datetime.now(SGT)
-
-    poll_dt = now.replace(hour=15, minute=20, second=0, microsecond=0)
-    rm_dt   = now.replace(hour=15, minute=25, second=0, microsecond=0)
-
-    poll_delay = (poll_dt - now).total_seconds()
-    rm_delay   = (rm_dt - now).total_seconds()
-
-    if poll_delay <= 0:
-        poll_delay = 60.0
-        poll_info = (now + timedelta(seconds=poll_delay)).strftime("%a %d %b %Y %H:%M")
-    else:
-        poll_info = poll_dt.strftime("%a %d %b %Y %H:%M")
-
-    if rm_delay <= 0:
-        rm_delay = poll_delay + 300.0  # ~5 min after fallback poll
-        rm_info = (now + timedelta(seconds=rm_delay)).strftime("%a %d %b %Y %H:%M")
-    else:
-        rm_info = rm_dt.strftime("%a %d %b %Y %H:%M")
-
-    jq.run_once(post_cg_poll_force,      when=poll_delay, name="ONEOFF_CG_POLL_TODAY_1520")
-    jq.run_once(remind_cell_group_force, when=rm_delay,   name="ONEOFF_CG_REM_TODAY_1525")
-
-    async def announce(ctx: ContextTypes.DEFAULT_TYPE):
-        try:
-            await ctx.bot.send_message(
-                chat_id=DEFAULT_CHAT_ID,
-                text=f"🔔 Armed one-off test:\n• CG poll at {poll_info} SGT\n• CG reminder at {rm_info} SGT"
-            )
-        except Exception as e:
-            logging.warning(f"Announce failed: {e}")
-    jq.run_once(announce, when=0.5, name="ONEOFF_CG_ANNOUNCE")
-
-# ---------- Build & Run with robust HTTP timeouts and retry ----------
-def build_app() -> Application:
-    request = HTTPXRequest(
-        connect_timeout=20,
-        read_timeout=30,
-        write_timeout=30,
-        pool_timeout=30,
-    )
-    defaults = Defaults(tzinfo=SGT)  # ensure PTB & JobQueue default to SGT
-    app = Application.builder().token(TOKEN).request(request).defaults(defaults).build()
-
-    # Commands
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("cgpoll", cgpoll_cmd))
-    app.add_handler(CommandHandler("cgrm", cgrm_cmd))
-    app.add_handler(CommandHandler("sunpoll", sunpoll_cmd))
-    app.add_handler(CommandHandler("sunrm", sunrm_cmd))
-    app.add_handler(CommandHandler("when", when_cmd))
-    app.add_handler(CommandHandler("jobs", jobs_cmd))
-    app.add_handler(CommandHandler("testpoll", testpoll_cmd))
-    app.add_handler(CommandHandler("id", id_cmd))
-    app.add_error_handler(error_handler)
-
-    # Jobs
-    schedule_jobs(app)
-    catchup_on_start(app)
-
-    # Startup confirmations
-    app.job_queue.run_once(_startup_ping, when=1, name="STARTUP_PING")
-    app.job_queue.run_once(_register_commands, when=2, name="REGISTER_COMMANDS")
-
-    # >>> Arm today's one-off test at 15:20 / 15:25 SGT <<<
-    arm_today_1520_1525(app)
-
-    return app
-
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logging.exception("Unhandled exception while handling update: %s", update, exc_info=context.error)
 
 def main():
-    backoff = 10  # seconds
+    backoff = 10
     while True:
         try:
             app = build_app()
             logging.info("Bot starting…")
             app.run_polling(drop_pending_updates=True)
-            break  # clean exit
+            break
         except telegram.error.TimedOut as e:
             logging.warning(f"Telegram API timed out at startup; retrying in {backoff}s: {e}")
             _time.sleep(backoff)
