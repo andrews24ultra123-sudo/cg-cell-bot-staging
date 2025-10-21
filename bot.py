@@ -202,6 +202,21 @@ async def remind_cell_group(ctx: ContextTypes.DEFAULT_TYPE, update: Optional[Upd
     else:
         await ctx.bot.send_message(DEFAULT_CHAT_ID, f"⏰ Reminder: Please vote on the Cell Group poll for {date_txt}.")
 
+# ✅ Force reminder (ignores weekday guard; still replies to poll if possible)
+async def remind_cell_group_force(ctx: ContextTypes.DEFAULT_TYPE):
+    now = datetime.now(SGT)
+    date_txt = format_date_plain(friday_for_reminder(now))
+    ref = STATE.get("cg_poll")
+    if isinstance(ref, PollRef):
+        await ctx.bot.send_message(ref.chat_id, f"⏰ Reminder: Please vote on the Cell Group poll above for {date_txt}.",
+                                   reply_to_message_id=ref.message_id, allow_sending_without_reply=True)
+    else:
+        await ctx.bot.send_message(DEFAULT_CHAT_ID, f"⏰ Reminder: Please vote on the Cell Group poll for {date_txt}.")
+
+# Wrapper for job queue to force-post CG poll
+async def post_cg_poll_force(ctx: ContextTypes.DEFAULT_TYPE):
+    await send_cell_group_poll(ctx, update=None, force=True)
+
 # ---------- /when helper ----------
 def _next_occurrence(now: datetime, weekday: int, hh: int, mm: int) -> datetime:
     days_ahead = (weekday - now.weekday()) % 7
@@ -286,7 +301,7 @@ async def id_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     await update.message.reply_text(f"Chat type: {chat.type}\nChat ID: {chat.id}")
 
-# ---------- Scheduler ----------
+# ---------- Scheduler (weekly) ----------
 def schedule_jobs(app: Application):
     jq = app.job_queue
     # CG weekly
@@ -351,6 +366,49 @@ async def _register_commands(ctx: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logging.warning(f"set_my_commands failed: {e}")
 
+# ---------- One-off arm for TODAY (3:20 poll, 3:25 reminder) ----------
+def arm_today_1520_1525(app: Application):
+    """
+    Arms:
+      - CG poll TODAY at 15:20 SGT (forced)
+      - CG reminder TODAY at 15:25 SGT (forced)
+    If already past, falls back to poll ~60s from now and reminder ~5 minutes after poll.
+    Also posts an immediate 'armed' message in the group.
+    """
+    jq = app.job_queue
+    now = datetime.now(SGT)
+
+    poll_dt = now.replace(hour=15, minute=20, second=0, microsecond=0)
+    rm_dt   = now.replace(hour=15, minute=25, second=0, microsecond=0)
+
+    poll_delay = (poll_dt - now).total_seconds()
+    rm_delay   = (rm_dt - now).total_seconds()
+
+    if poll_delay <= 0:
+        poll_delay = 60.0
+        poll_info = (now + timedelta(seconds=poll_delay)).strftime("%a %d %b %Y %H:%M")
+    else:
+        poll_info = poll_dt.strftime("%a %d %b %Y %H:%M")
+
+    if rm_delay <= 0:
+        rm_delay = poll_delay + 300.0  # ~5 min after fallback poll
+        rm_info = (now + timedelta(seconds=rm_delay)).strftime("%a %d %b %Y %H:%M")
+    else:
+        rm_info = rm_dt.strftime("%a %d %b %Y %H:%M")
+
+    jq.run_once(post_cg_poll_force,      when=poll_delay, name="ONEOFF_CG_POLL_TODAY_1520")
+    jq.run_once(remind_cell_group_force, when=rm_delay,   name="ONEOFF_CG_REM_TODAY_1525")
+
+    async def announce(ctx: ContextTypes.DEFAULT_TYPE):
+        try:
+            await ctx.bot.send_message(
+                chat_id=DEFAULT_CHAT_ID,
+                text=f"🔔 Armed one-off test:\n• CG poll at {poll_info} SGT\n• CG reminder at {rm_info} SGT"
+            )
+        except Exception as e:
+            logging.warning(f"Announce failed: {e}")
+    jq.run_once(announce, when=0.5, name="ONEOFF_CG_ANNOUNCE")
+
 # ---------- Build & Run with robust HTTP timeouts and retry ----------
 def build_app() -> Application:
     request = HTTPXRequest(
@@ -381,6 +439,10 @@ def build_app() -> Application:
     # Startup confirmations
     app.job_queue.run_once(_startup_ping, when=1, name="STARTUP_PING")
     app.job_queue.run_once(_register_commands, when=2, name="REGISTER_COMMANDS")
+
+    # >>> Arm today's one-off test at 15:20 / 15:25 SGT <<<
+    arm_today_1520_1525(app)
+
     return app
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
